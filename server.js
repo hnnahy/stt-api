@@ -1,19 +1,17 @@
 'use strict';
-// Speech Transcription API — supports multiple STT models, switchable at runtime.
+// Speech Transcription API — model is set by admin, not the user.
 //
-// HOW MODEL SWITCHING WORKS:
-//   1. Android calls GET /models → returns list of available models
-//   2. Display the list as a dropdown in the UI
-//   3. User selects a model from the dropdown
-//   4. Android sends POST /transcribe with the selected model + audio file
-//   5. Server routes to the correct STT provider and returns the transcript
-//   To add a new model: add entry to ALL_MODELS + write a transcribe function below.
+// HOW TO SWITCH MODELS (admin only):
+//   1. Open .env
+//   2. Set ACTIVE_MODEL to one of: openai, azure
+//   3. Restart the server — all users will use the new model
+//
+// Android just sends audio + language. No model selection on the user side.
 //
 // Start: node server.js
 //
-// GET  /models      → returns available models for the Android dropdown
-// GET  /health      → liveness check + which models are configured
-// POST /transcribe  → fields: audio (WAV/MP3), model (from dropdown), language
+// GET  /health      → liveness check + which model is active
+// POST /transcribe  → fields: audio (WAV/MP3), language
 
 require('dotenv').config();
 const express = require('express');
@@ -23,8 +21,9 @@ const path    = require('path');
 const { OpenAI } = require('openai');
 const sdk     = require('microsoft-cognitiveservices-speech-sdk');
 
-const PORT       = process.env.PORT || 3000;
-const UPLOAD_DIR = path.join(__dirname, 'tmp');
+const PORT         = process.env.PORT || 3000;
+const ACTIVE_MODEL = process.env.ACTIVE_MODEL || 'openai'; // admin sets this in .env
+const UPLOAD_DIR   = path.join(__dirname, 'tmp');
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const app    = express();
@@ -34,22 +33,6 @@ const upload = multer({
     filename: (req, file, cb) => cb(null, `${Date.now()}${path.extname(file.originalname)}`),
   }),
 });
-
-// ── Models registry ───────────────────────────────────────────────────────────
-// THIS IS WHERE YOU SWITCH MODELS.
-// Add a new model here → it automatically appears in the Android dropdown.
-// Remove or comment out a model → it disappears from the dropdown.
-// A model only shows if its required .env keys are present.
-const ALL_MODELS = [
-  { id: 'openai', label: 'OpenAI (gpt-4o-transcribe)', requires: ['OPENAI_API_KEY'] },
-  { id: 'azure',  label: 'Azure Speech',               requires: ['AZURE_SPEECH_KEY', 'AZURE_SPEECH_REGION'] },
-];
-
-function configuredModels() {
-  return ALL_MODELS
-    .filter(m => m.requires.every(key => !!process.env[key]))
-    .map(({ id, label }) => ({ id, label }));
-}
 
 // ── Language helpers ──────────────────────────────────────────────────────────
 function getLangConfig(language) {
@@ -122,35 +105,26 @@ async function openaiTranscribe(filePath, openaiLang, prompt) {
 }
 
 // ── Routes ────────────────────────────────────────────────────────────────────
-app.get('/models', (req, res) => {
-  res.json({ success: true, data: configuredModels() });
-});
-
 app.get('/health', (req, res) => {
-  const models = configuredModels();
-  res.json({ success: true, data: { ok: true, configured_models: models.map(m => m.id) } });
+  res.json({ success: true, data: { ok: true, active_model: ACTIVE_MODEL } });
 });
 
 app.post('/transcribe', upload.single('audio'), async (req, res) => {
   const filePath = req.file?.path;
   try {
-    const model    = req.body?.model;
     const language = req.body?.language || 'ms-MY';
 
     if (!filePath) return res.status(400).json({ success: false, error: 'No audio file uploaded' });
-    if (!model)    return res.status(400).json({ success: false, error: 'model field is required' });
-
-    const isConfigured = configuredModels().some(m => m.id === model);
-    if (!isConfigured) return res.status(400).json({ success: false, error: `Model "${model}" is not configured or unknown` });
 
     const { azureLang, openaiLang } = getLangConfig(language);
     const prompt = getOpenAIPrompt(language);
 
     let transcript;
-    if (model === 'openai')     transcript = await openaiTranscribe(filePath, openaiLang, prompt);
-    else if (model === 'azure') transcript = await azureTranscribe(filePath, azureLang);
+    if (ACTIVE_MODEL === 'openai')     transcript = await openaiTranscribe(filePath, openaiLang, prompt);
+    else if (ACTIVE_MODEL === 'azure') transcript = await azureTranscribe(filePath, azureLang);
+    else return res.status(500).json({ success: false, error: `Unknown ACTIVE_MODEL "${ACTIVE_MODEL}" in .env` });
 
-    res.json({ success: true, data: { transcript, model, language } });
+    res.json({ success: true, data: { transcript, model: ACTIVE_MODEL, language } });
 
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -161,11 +135,6 @@ app.post('/transcribe', upload.single('audio'), async (req, res) => {
 
 // ── Startup ───────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
-  const models = configuredModels();
   console.log(`API running on http://localhost:${PORT}`);
-  console.log(`Configured models: ${models.map(m => m.id).join(', ') || 'NONE — check .env'}`);
-  if (models.length < ALL_MODELS.length) {
-    const missing = ALL_MODELS.filter(m => !models.find(c => c.id === m.id));
-    missing.forEach(m => console.warn(`  ⚠ ${m.id} disabled — missing: ${m.requires.filter(k => !process.env[k]).join(', ')}`));
-  }
+  console.log(`Active model: ${ACTIVE_MODEL} (change ACTIVE_MODEL in .env to switch)`);
 });
