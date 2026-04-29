@@ -1,0 +1,8 @@
+.env
+node_modules/
+audio/converted/
+results/
+tmp/
+_unnecessary/
+.claude/
+*.log
