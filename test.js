@@ -10,6 +10,7 @@ const http = require('http');
 
 const FILE     = process.argv[2] || path.join(__dirname, 'spm', 'bm.wav');
 const LANGUAGE = process.argv[3] || 'ms-MY';
+const MODEL    = process.argv[4] || 'openai';
 
 if (!fs.existsSync(FILE)) {
   console.error(`File not found: ${FILE}`);
@@ -24,6 +25,7 @@ const boundary  = '----Boundary' + Date.now();
 
 const header = Buffer.from(
   `--${boundary}\r\nContent-Disposition: form-data; name="language"\r\n\r\n${LANGUAGE}\r\n` +
+  `--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\n${MODEL}\r\n` +
   `--${boundary}\r\nContent-Disposition: form-data; name="audio"; filename="${filename}"\r\nContent-Type: ${mime}\r\n\r\n`
 );
 const footer = Buffer.from(`\r\n--${boundary}--\r\n`);
